@@ -115,155 +115,85 @@ namespace SecureDataBackupSystem
         string password,
         IProgress<int> progress)
         {
-            System.IO.Directory.CreateDirectory(backupFolder);
+            if (encrypt && string.IsNullOrWhiteSpace(password))
+                throw new Exception("Vui lòng nhập mật khẩu mã hóa!");
 
-            string[] files = System.IO.Directory.GetFiles(
-                sourceFolder, "*", System.IO.SearchOption.AllDirectories
-            );
-            string historyFile = System.IO.Path.GetFullPath(historyPath);  // Lấy đường dẫn đầy đủ của file lịch sử
-            // Loại bỏ file lịch sử khỏi danh sách sao lưu
-            files = files.Where(file =>
-                    !string.Equals(
-                        System.IO.Path.GetFullPath(file),
-                        historyFile,
-                        StringComparison.OrdinalIgnoreCase
-                    )
-            ).ToArray();          
-
-            
-            int totalFiles = files.Length;
-            int completedFiles = 0;
-
-            foreach (string file in files)
-            {
-                string relativePath = file.Substring(sourceFolder.Length)
-                    .TrimStart('\\', '/');
-
-                string destination = System.IO.Path.Combine(
-                    backupFolder, relativePath
-                );
-
-                if (encrypt)
+            BackupPipeline.Run(
+                sourceFolder,
+                backupFolder,
+                historyPath,
+                encrypt,
+                (file, destination) =>
                 {
-                    destination += ".enc";
-                }
+                    bool shouldCopy = isFull;
+                    if (!isIncremental)
+                        return shouldCopy;
 
-                System.IO.Directory.CreateDirectory(
-                    System.IO.Path.GetDirectoryName(destination)
-                );
-
-                bool shouldCopy = isFull;
-
-
-                if (isIncremental)
-                {
                     shouldCopy = !System.IO.File.Exists(destination);
+                    if (shouldCopy)
+                        return true;
 
-                    if (!shouldCopy)
+                    string compareFile = destination;
+                    string tempFile = null;
+                    try
                     {
                         if (encrypt)
                         {
-                            // Giải mã vào file tạm để so sánh nội dung
-                            string tempFile = System.IO.Path.Combine(
+                            tempFile = System.IO.Path.Combine(
                                 System.IO.Path.GetTempPath(),
-                                Guid.NewGuid().ToString("N") + ".tmp"
-                            );
+                                Guid.NewGuid().ToString("N") + ".tmp");
+                            DecryptFile(destination, tempFile, password);
+                            compareFile = tempFile;
+                        }
 
-                            try
-                            {
-                                DecryptFile(destination, tempFile, password);
+                        using (var sha = System.Security.Cryptography.SHA256.Create())
+                        using (var sourceStream = System.IO.File.OpenRead(file))
+                        using (var backupStream = System.IO.File.OpenRead(compareFile))
+                        {
+                            byte[] hash1 = sha.ComputeHash(sourceStream);
+                            byte[] hash2 = sha.ComputeHash(backupStream);
+                            return !hash1.SequenceEqual(hash2);
+                        }
+                    }
+                    finally
+                    {
+                        if (tempFile != null && System.IO.File.Exists(tempFile))
+                            System.IO.File.Delete(tempFile);
+                    }
+                },
+                (file, destination) =>
+                {
+                    if (!encrypt)
+                    {
+                        System.IO.File.Copy(file, destination, true);
+                        return;
+                    }
 
-                                using (var sha =
-                                    System.Security.Cryptography.SHA256.Create())
-                                using (var sourceStream =
-                                    System.IO.File.OpenRead(file))
-                                using (var backupStream =
-                                    System.IO.File.OpenRead(tempFile))
-                                {
-                                    byte[] hash1 = sha.ComputeHash(sourceStream);
-                                    byte[] hash2 = sha.ComputeHash(backupStream);
-
-                                    shouldCopy = !hash1.SequenceEqual(hash2);
-                                }
-                            }
-                            finally
-                            {
-                                if (System.IO.File.Exists(tempFile))
-                                    System.IO.File.Delete(tempFile);
-                            }
+                    string tempEncrypted = destination + "." +
+                        Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        EncryptFile(file, tempEncrypted, password);
+                        if (System.IO.File.Exists(destination))
+                        {
+                            string oldBackup = destination + ".old";
+                            if (System.IO.File.Exists(oldBackup))
+                                System.IO.File.Delete(oldBackup);
+                            System.IO.File.Replace(
+                                tempEncrypted, destination, oldBackup);
                         }
                         else
                         {
-                            using (var sha =
-                                System.Security.Cryptography.SHA256.Create())
-                            using (var sourceStream =
-                                System.IO.File.OpenRead(file))
-                            using (var backupStream =
-                                System.IO.File.OpenRead(destination))
-                            {
-                                byte[] hash1 = sha.ComputeHash(sourceStream);
-                                byte[] hash2 = sha.ComputeHash(backupStream);
-
-                                shouldCopy = !hash1.SequenceEqual(hash2);
-                            }
+                            System.IO.File.Move(tempEncrypted, destination);
                         }
                     }
-                }
-
-
-
-                if (shouldCopy)
-                {
-                    if (encrypt)
+                    finally
                     {
-                        if (string.IsNullOrWhiteSpace(password))
-                        {
-                            throw new Exception("Vui lòng nhập mật khẩu mã hóa!");
-                        }
-
-                        // Mã hóa ra file tạm trước
-                        string tempEncrypted = destination + "." +
-                            Guid.NewGuid().ToString("N") + ".tmp";
-
-                        try
-                        {
-                            EncryptFile(file, tempEncrypted, password);
-
-                            // Chỉ thay bản Backup cũ khi mã hóa đã thành công
-                            if (System.IO.File.Exists(destination))
-                            {
-                                string oldBackup = destination + ".old";
-
-                                if (System.IO.File.Exists(oldBackup))
-                                    System.IO.File.Delete(oldBackup);
-
-                                System.IO.File.Replace(
-                                    tempEncrypted, destination, oldBackup);
-                            }
-                            else
-                            {
-                                System.IO.File.Move(tempEncrypted, destination);
-                            }
-                        }
-                        finally
-                        {
-                            if (System.IO.File.Exists(tempEncrypted))
-                                System.IO.File.Delete(tempEncrypted);
-                        }
+                        if (System.IO.File.Exists(tempEncrypted))
+                            System.IO.File.Delete(tempEncrypted);
                     }
-                    else
-                    {
-                        System.IO.File.Copy(file, destination, true);
-                    }
-                }
-
-
-                completedFiles++;
-
-                progress.Report(completedFiles * 100 / totalFiles);
-            }
-
-            progress.Report(100);
+                },
+                progress);
         }
 
         private void EncryptFile(string source, string destination, string password)
@@ -485,316 +415,224 @@ namespace SecureDataBackupSystem
         private async Task RunBackupAsync()
         {
             btnBackup.Enabled = false;
-            // Kiểm tra người dùng đã chọn dữ liệu chưa
-            if (string.IsNullOrWhiteSpace(txtFile.Text))
-            {
-                MessageBox.Show("Vui lòng chọn file hoặc thư mục!");
-                btnBackup.Enabled = true;
-                return;
-            }
-            // Lấy thư mục lưu các bản sao lưu của chương trình
-            string backupRoot = System.IO.Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "SecureDataBackup"
-            );
-
-            string sourcePath = System.IO.Path.GetFullPath(txtFile.Text); // Lấy đường dẫn nguồn đã chọn
-            string rootPath = System.IO.Path.GetFullPath(backupRoot); // Kiểm tra có chọn chính thư mục lưu Backup hoặc thư mục cha không
-
-            if (System.IO.Directory.Exists(sourcePath) &&
-                (rootPath.Equals(sourcePath, StringComparison.OrdinalIgnoreCase) ||
-                 rootPath.StartsWith(
-                     sourcePath.TrimEnd(
-                         System.IO.Path.DirectorySeparatorChar,
-                         System.IO.Path.AltDirectorySeparatorChar
-                     ) + System.IO.Path.DirectorySeparatorChar,
-                     StringComparison.OrdinalIgnoreCase)))
-            {
-                // Không cho sao lưu thư mục chứa dữ liệu Backup
-                MessageBox.Show("Không thể sao lưu thư mục chứa dữ liệu Backup của chương trình!");
-                btnBackup.Enabled = true;
-                return;
-            }
-            // Không cho chọn trực tiếp file lịch sử để sao lưu
-            if (string.Equals(
-                System.IO.Path.GetFullPath(txtFile.Text),
-                System.IO.Path.GetFullPath(historyPath),
-                StringComparison.OrdinalIgnoreCase))
-            {
-                MessageBox.Show("Không thể sao lưu file lịch sử của chương trình!");
-                btnBackup.Enabled = true;
-                return;
-            }
             try
             {
-                if (System.IO.Directory.Exists(txtFile.Text))
+                if (string.IsNullOrWhiteSpace(txtFile.Text))
                 {
-                    if (!radFull.Checked && !radIncremental.Checked)
-                    {
-                        MessageBox.Show("Vui lòng chọn chế độ sao lưu!");
-                        return;
-                    }
-                    try
-                    {
-                        string folderName = new System.IO.DirectoryInfo(
-                            txtFile.Text).Name;
-
-                        string destination = System.IO.Path.Combine(
-                            backupRoot, folderName
-                        );
-
-                        bool isFull = radFull.Checked;
-                        bool isIncremental = radIncremental.Checked;
-                        bool encrypt = chkEncrypt.Checked;
-                        string password = txtPassword.Text;
-                        string sourceFolder = txtFile.Text;
-
-                        if (encrypt && string.IsNullOrWhiteSpace(password))
-                        {
-                            MessageBox.Show("Vui lòng nhập mật khẩu mã hóa!");
-                            return;
-                        }
-
-                        progressBar1.Value = 0;
-                        lblStatus.Text = "Đang sao lưu...";
-
-                        var progress = new Progress<int>(value =>
-                        {
-                            progressBar1.Value = value;
-                            lblStatus.Text = "Đang sao lưu: " + value + "%";
-                        });
-
-                        await Task.Run(() =>
-                        {
-                            BackupFolder(
-                                sourceFolder,
-                                destination,
-                                isFull,
-                                isIncremental,
-                                encrypt,
-                                password,
-                                progress
-                            );
-                        });
-                        AddHistory(
-                        radFull.Checked ? "Full Backup" : "Incremental",
-                        "Thành công"
-                    );
-                        progressBar1.Value = 100;
-                        lblStatus.Text = "Sao lưu thư mục thành công!";
-
-                        if (!isAutoRunning)
-                            MessageBox.Show("Backup thư mục thành công!");
-                    }
-                    catch (Exception ex)
-                    {
-                        lblStatus.Text = "Lỗi Backup: " + ex.Message;
-
-                        if (!isAutoRunning)
-                        {
-                            MessageBox.Show("Lỗi: " + ex.Message);
-                        }
-                    }
-
+                    MessageBox.Show("Vui lòng chọn file hoặc thư mục!");
                     return;
                 }
 
-                if (!System.IO.File.Exists(txtFile.Text))
+                string backupRoot = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    "SecureDataBackup");
+                string sourcePath = System.IO.Path.GetFullPath(txtFile.Text);
+                string rootPath = System.IO.Path.GetFullPath(backupRoot);
+                bool isDirectory = System.IO.Directory.Exists(sourcePath);
+
+                if (isDirectory &&
+                    (rootPath.Equals(sourcePath, StringComparison.OrdinalIgnoreCase) ||
+                     rootPath.StartsWith(
+                         sourcePath.TrimEnd(
+                             System.IO.Path.DirectorySeparatorChar,
+                             System.IO.Path.AltDirectorySeparatorChar) +
+                         System.IO.Path.DirectorySeparatorChar,
+                         StringComparison.OrdinalIgnoreCase)))
+                {
+                    MessageBox.Show(
+                        "Không thể sao lưu thư mục chứa dữ liệu Backup của chương trình!");
+                    return;
+                }
+
+                if (string.Equals(
+                    sourcePath,
+                    System.IO.Path.GetFullPath(historyPath),
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show(
+                        "Không thể sao lưu file lịch sử của chương trình!");
+                    return;
+                }
+
+                if (!isDirectory && !System.IO.File.Exists(sourcePath))
                 {
                     MessageBox.Show("Vui lòng chọn file trước!");
                     return;
                 }
 
-                try
+                if (!radFull.Checked && !radIncremental.Checked)
                 {
-                    string folder = System.IO.Path.Combine(
-                        Environment.GetFolderPath(
-                            Environment.SpecialFolder.MyDocuments),
-                        "SecureDataBackup"
-                    );
+                    MessageBox.Show("Vui lòng chọn chế độ sao lưu!");
+                    return;
+                }
 
-                    System.IO.Directory.CreateDirectory(folder);
+                bool isFull = radFull.Checked;
+                bool isIncremental = radIncremental.Checked;
+                bool encrypt = chkEncrypt.Checked;
+                string password = txtPassword.Text;
+                if (encrypt && string.IsNullOrWhiteSpace(password))
+                {
+                    MessageBox.Show("Vui lòng nhập mật khẩu mã hóa!");
+                    return;
+                }
 
-                    string source = txtFile.Text;
+                string destinationRoot = isDirectory
+                    ? System.IO.Path.Combine(
+                        backupRoot,
+                        new System.IO.DirectoryInfo(sourcePath).Name)
+                    : backupRoot;
 
-                    string destination = System.IO.Path.Combine(
-                        folder,
-                        System.IO.Path.GetFileName(source)
-                    );
+                progressBar1.Value = 0;
+                lblStatus.Text = "Đang sao lưu...";
+                var progress = new Progress<int>(value =>
+                {
+                    progressBar1.Value = value;
+                    lblStatus.Text = "Đang sao lưu: " + value + "%";
+                });
 
-
-                    if (radFull.Checked)
+                int copiedFiles = await Task.Run(() =>
+                {
+                    if (isDirectory)
                     {
-                        if (chkEncrypt.Checked)
+                        BackupFolder(
+                            sourcePath,
+                            destinationRoot,
+                            isFull,
+                            isIncremental,
+                            encrypt,
+                            password,
+                            progress);
+                        return 1;
+                    }
+
+                    return BackupPipeline.Run(
+                        sourcePath,
+                        destinationRoot,
+                        null,
+                        encrypt,
+                        (file, destination) =>
                         {
-                            if (string.IsNullOrWhiteSpace(txtPassword.Text))
+                            if (isFull)
                             {
-                                MessageBox.Show("Vui lòng nhập mật khẩu mã hóa!");
-                                return;
+                                if (encrypt && System.IO.File.Exists(destination))
+                                {
+                                    throw new Exception(
+                                        "Đã có bản mã hóa. Hãy đổi tên hoặc chuyển bản cũ trước khi sao lưu!");
+                                }
+                                return true;
                             }
 
-                            string encryptedPath = destination + ".enc";
+                            if (!System.IO.File.Exists(destination))
+                                return true;
 
-                            if (System.IO.File.Exists(encryptedPath))
-                            {
-                                MessageBox.Show(
-                                    "Đã có bản mã hóa. Hãy đổi tên hoặc chuyển bản cũ trước khi sao lưu!");
-                                return;
-                            }
-
-                            string password = txtPassword.Text;
-
-                            await Task.Run(() =>
-                            {
-                                EncryptFile(source, encryptedPath, password);
-                            });
-
-                            lblStatus.Text = "Đã tạo bản Backup mã hóa!";
-                        }
-                        else
-                        {
-                            await Task.Run(() =>
-                            {
-                                System.IO.File.Copy(source, destination, true);
-                            });
-
-                            lblStatus.Text = "Full Backup thành công!";
-                        }
-
-                        AddHistory("Full Backup", "Thành công");
-
-                        progressBar1.Value = 100;
-                        if(!isAutoRunning)
-                            MessageBox.Show("Backup thành công!");
-                                            }
-
-
-                    else if (radIncremental.Checked)
-                    {
-                        bool encrypt = chkEncrypt.Checked;
-                        string password = txtPassword.Text;
-
-                        if (encrypt && string.IsNullOrWhiteSpace(password))
-                        {
-                            MessageBox.Show("Vui lòng nhập mật khẩu mã hóa!");
-                            return;
-                        }
-
-                        string backupPath = encrypt
-                            ? destination + ".enc"
-                            : destination;
-
-                        bool changed = !System.IO.File.Exists(backupPath);
-
-                        if (!changed)
-                        {
-                            changed = await Task.Run(() =>
-                            {
-                                string compareFile = backupPath;
-                                string tempFile = null;
-
-                                try
-                                {
-                                    if (encrypt)
-                                    {
-                                        tempFile = System.IO.Path.Combine(
-                                            System.IO.Path.GetTempPath(),
-                                            Guid.NewGuid().ToString("N") + ".tmp"
-                                        );
-
-                                        DecryptFile(backupPath, tempFile, password);
-                                        compareFile = tempFile;
-                                    }
-
-                                    using (var sha = SHA256.Create())
-                                    using (var input1 = System.IO.File.OpenRead(source))
-                                    using (var input2 = System.IO.File.OpenRead(compareFile))
-                                    {
-                                        byte[] hash1 = sha.ComputeHash(input1);
-                                        byte[] hash2 = sha.ComputeHash(input2);
-
-                                        return !hash1.SequenceEqual(hash2);
-                                    }
-                                }
-                                finally
-                                {
-                                    if (tempFile != null && System.IO.File.Exists(tempFile))
-                                        System.IO.File.Delete(tempFile);
-                                }
-                            });
-                        }
-
-                        if (changed)
-                        {
-                            await Task.Run(() =>
+                            string compareFile = destination;
+                            string tempFile = null;
+                            try
                             {
                                 if (encrypt)
                                 {
-                                    string tempEncrypted = backupPath + "." +
-                                        Guid.NewGuid().ToString("N") + ".tmp";
-
-                                    try
-                                    {
-                                        EncryptFile(source, tempEncrypted, password);
-
-                                        if (System.IO.File.Exists(backupPath))
-                                        {
-                                            System.IO.File.Replace(
-                                                tempEncrypted, backupPath, null);
-                                        }
-                                        else
-                                        {
-                                            System.IO.File.Move(tempEncrypted, backupPath);
-                                        }
-                                    }
-                                    finally
-                                    {
-                                        if (System.IO.File.Exists(tempEncrypted))
-                                            System.IO.File.Delete(tempEncrypted);
-                                    }
+                                    tempFile = System.IO.Path.Combine(
+                                        System.IO.Path.GetTempPath(),
+                                        Guid.NewGuid().ToString("N") + ".tmp");
+                                    DecryptFile(destination, tempFile, password);
+                                    compareFile = tempFile;
                                 }
-                                else
+
+                                using (var sha = System.Security.Cryptography.SHA256.Create())
+                                using (var sourceStream = System.IO.File.OpenRead(file))
+                                using (var backupStream = System.IO.File.OpenRead(compareFile))
                                 {
-                                    System.IO.File.Copy(source, backupPath, true);
+                                    byte[] hash1 = sha.ComputeHash(sourceStream);
+                                    byte[] hash2 = sha.ComputeHash(backupStream);
+                                    return !hash1.SequenceEqual(hash2);
                                 }
-                            });
-
-                            AddHistory("Incremental", "Thành công");
-                            lblStatus.Text = "Incremental Backup thành công!";
-
-                            if (!isAutoRunning)
-                                MessageBox.Show("Đã sao lưu file thay đổi!");
-                        }
-                        else
+                            }
+                            finally
+                            {
+                                if (tempFile != null && System.IO.File.Exists(tempFile))
+                                    System.IO.File.Delete(tempFile);
+                            }
+                        },
+                        (file, destination) =>
                         {
-                            lblStatus.Text = "File chưa thay đổi";
+                            if (!encrypt)
+                            {
+                                System.IO.File.Copy(file, destination, true);
+                                return;
+                            }
 
-                            if (!isAutoRunning)
-                                MessageBox.Show("Không cần sao lưu lại!");
-                        }
-                    }
-                    else
-                    {
-                        MessageBox.Show("Vui lòng chọn chế độ sao lưu!");
-                        return;
-                    }
+                            if (isFull)
+                            {
+                                EncryptFile(file, destination, password);
+                                return;
+                            }
 
-                    progressBar1.Value = 100;
-                }
-                catch (Exception ex)
+                            string tempEncrypted = destination + "." +
+                                Guid.NewGuid().ToString("N") + ".tmp";
+                            try
+                            {
+                                EncryptFile(file, tempEncrypted, password);
+                                if (System.IO.File.Exists(destination))
+                                    System.IO.File.Replace(tempEncrypted, destination, null);
+                                else
+                                    System.IO.File.Move(tempEncrypted, destination);
+                            }
+                            finally
+                            {
+                                if (System.IO.File.Exists(tempEncrypted))
+                                    System.IO.File.Delete(tempEncrypted);
+                            }
+                        },
+                        progress);
+                });
+
+                if (isDirectory)
                 {
-                    lblStatus.Text = "Lỗi Backup: " + ex.Message;
-
+                    AddHistory(
+                        isFull ? "Full Backup" : "Incremental",
+                        "Thành công");
+                    progressBar1.Value = 100;
+                    lblStatus.Text = "Sao lưu thư mục thành công!";
                     if (!isAutoRunning)
-                        MessageBox.Show("Lỗi: " + ex.Message);
+                        MessageBox.Show("Backup thư mục thành công!");
                 }
+                else if (isFull)
+                {
+                    AddHistory("Full Backup", "Thành công");
+                    progressBar1.Value = 100;
+                    lblStatus.Text = encrypt
+                        ? "Đã tạo bản Backup mã hóa!"
+                        : "Full Backup thành công!";
+                    if (!isAutoRunning)
+                        MessageBox.Show("Backup thành công!");
+                }
+                else if (copiedFiles > 0)
+                {
+                    AddHistory("Incremental", "Thành công");
+                    progressBar1.Value = 100;
+                    lblStatus.Text = "Incremental Backup thành công!";
+                    if (!isAutoRunning)
+                        MessageBox.Show("Đã sao lưu file thay đổi!");
+                }
+                else
+                {
+                    progressBar1.Value = 100;
+                    lblStatus.Text = "File chưa thay đổi";
+                    if (!isAutoRunning)
+                        MessageBox.Show("Không cần sao lưu lại!");
+                }
+            }
+            catch (Exception ex)
+            {
+                lblStatus.Text = "Lỗi Backup: " + ex.Message;
+                if (!isAutoRunning)
+                    MessageBox.Show("Lỗi: " + ex.Message);
             }
             finally
             {
                 btnBackup.Enabled = true;
             }
         }
-
         private void btnRestore_Click(object sender, EventArgs e)
         {
             string folder = System.IO.Path.Combine(

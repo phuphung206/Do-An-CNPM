@@ -1,4 +1,3 @@
-﻿
 using System;
 using System.IO;
 
@@ -6,22 +5,17 @@ namespace SecureDataBackupSystem
 {
     public static class BackupService
     {
-        // Thư mục mặc định chứa dữ liệu sao lưu
         private static readonly string backupRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-            "SecureDataBackup"
-        );
+            "SecureDataBackup");
 
         // Hàm thực hiện Full Backup theo lịch
         public static void RunScheduledBackup(string sourcePath)
         {
-            // Kiểm tra đường dẫn đầu vào
             if (string.IsNullOrWhiteSpace(sourcePath))
                 throw new Exception("Chưa chọn đường dẫn sao lưu!");
 
             sourcePath = Path.GetFullPath(sourcePath);
-
-            // Không cho sao lưu chính thư mục chứa bản Backup
             string root = Path.GetFullPath(backupRoot)
                 .TrimEnd(Path.DirectorySeparatorChar);
 
@@ -35,65 +29,40 @@ namespace SecureDataBackupSystem
                     "Không thể sao lưu thư mục chứa dữ liệu Backup!");
             }
 
-            Directory.CreateDirectory(backupRoot);
-
-            // Kiểm tra nguồn là file hay thư mục
-            if (File.Exists(sourcePath))
-            {
-                // Sao lưu một file
-                string destination = Path.Combine(
-                    backupRoot, Path.GetFileName(sourcePath));
-
-                if (sourcePath.Equals(
-                    Path.GetFullPath(destination),
-                    StringComparison.OrdinalIgnoreCase))
-                    throw new Exception("Nguồn và đích trùng nhau!");
-
-                File.Copy(sourcePath, destination, true);
-            }
-            else if (Directory.Exists(sourcePath))
-            {
-                // Sao lưu toàn bộ thư mục
-                string folderName = new DirectoryInfo(sourcePath).Name;
-                string destinationFolder = Path.Combine(
-                    backupRoot, folderName);
-
-                foreach (string file in Directory.GetFiles(
-                    sourcePath, "*", SearchOption.AllDirectories))
-                {
-                    // Giữ cấu trúc thư mục con
-                    string relativePath = file.Substring(
-                        sourcePath.TrimEnd('\\', '/').Length)
-                        .TrimStart('\\', '/');
-
-                    string destination = Path.Combine(
-                        destinationFolder, relativePath);
-
-                    Directory.CreateDirectory(
-                        Path.GetDirectoryName(destination));
-
-                    // Ghi đè bản sao lưu cũ
-                    File.Copy(file, destination, true);
-                }
-            }
-            else
-            {
+            bool isDirectory = Directory.Exists(sourcePath);
+            if (!isDirectory && !File.Exists(sourcePath))
                 throw new Exception("File hoặc thư mục không tồn tại!");
+
+            string destinationRoot = isDirectory
+                ? Path.Combine(backupRoot, new DirectoryInfo(sourcePath).Name)
+                : backupRoot;
+
+            if (!isDirectory && sourcePath.Equals(
+                Path.GetFullPath(Path.Combine(
+                    destinationRoot, Path.GetFileName(sourcePath))),
+                StringComparison.OrdinalIgnoreCase))
+            {
+                throw new Exception("Nguồn và đích trùng nhau!");
             }
 
-            // Ghi lịch sử khi sao lưu thành công
-            string historyPath = Path.Combine(
-                backupRoot, "backup_history.txt");
+            // Lịch hiện tại vẫn là Full Backup không mã hóa. Chỉ việc liệt kê,
+            // ánh xạ đích và xử lý file được dùng chung với backup thủ công.
+            BackupPipeline.Run(
+                sourcePath,
+                destinationRoot,
+                null,
+                false,
+                (source, destination) => true,
+                (source, destination) => File.Copy(source, destination, true),
+                null);
 
+            string historyPath = Path.Combine(backupRoot, "backup_history.txt");
             string line = string.Join("\t",
                 DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss"),
                 "Scheduled Full Backup",
                 sourcePath,
-                "Thành công"
-            );
-
-            File.AppendAllText(
-                historyPath, line + Environment.NewLine);
+                "Thành công");
+            File.AppendAllText(historyPath, line + Environment.NewLine);
         }
     }
 }
