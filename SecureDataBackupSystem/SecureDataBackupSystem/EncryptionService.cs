@@ -8,10 +8,7 @@ using Org.BouncyCastle.Crypto.Parameters;
 
 namespace SecureDataBackupSystem
 {
-    /// <summary>
-    /// AES-256-GCM for bounded backup chunks. The caller supplies the same
-    /// associated data when decrypting; it is authenticated but not stored.
-    /// </summary>
+ 
     public static class EncryptionService
     {
         private static readonly byte[] Magic = { (byte)'S', (byte)'D', (byte)'B', (byte)'E' };
@@ -22,10 +19,6 @@ namespace SecureDataBackupSystem
         private const int HeaderSizeBytes = 5 + NonceSizeBytes;
         public const int MaxChunkSizeBytes = 4 * 1024 * 1024;
 
-        /// <summary>
-        /// Encrypts one chunk. The returned envelope is magic, version, nonce,
-        /// and ciphertext with the GCM authentication tag appended.
-        /// </summary>
         public static byte[] EncryptChunk(
             byte[] plaintext,
             byte[] key,
@@ -59,10 +52,6 @@ namespace SecureDataBackupSystem
             return envelope;
         }
 
-        /// <summary>
-        /// Authenticates and decrypts one chunk. No plaintext is returned when
-        /// the envelope, key, or associated data fails authentication.
-        /// </summary>
         public static byte[] DecryptChunk(
             byte[] envelope,
             byte[] key,
