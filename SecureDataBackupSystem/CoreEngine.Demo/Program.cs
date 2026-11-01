@@ -48,8 +48,20 @@ string stateFolder = Path.Combine(
 
 Directory.CreateDirectory(stateFolder);
 
+
+string normalizedSource = Path.GetFullPath(
+    source.Trim().Trim('"'))
+    .TrimEnd('\\', '/')
+    .ToUpperInvariant();
+
+string sourceKey = Convert.ToHexString(
+    System.Security.Cryptography.SHA256.HashData(
+        Encoding.UTF8.GetBytes(normalizedSource)));
+
 string statePath = Path.Combine(
-    stateFolder, "last-scan.json");
+    stateFolder,
+    $"last-scan-{sourceKey}.json");
+
 
 // Doc danh sach file cua lan backup truoc
 var oldFiles = new List<BackupFileMetadata>();
@@ -130,7 +142,8 @@ foreach (var change in filesToBackup)
     string compressedPath = Path.Combine(
         Path.GetTempPath(),
         $"backup-{Guid.NewGuid():N}.gz");
-
+try
+{
     // Nen file
     CompressionHelper.CompressFile(
         file.FullPath,
@@ -147,25 +160,40 @@ foreach (var change in filesToBackup)
         Path.GetTempPath(),
         $"restored-{Guid.NewGuid():N}.bin");
 
+    
+try
+{
     CompressionHelper.DecompressFile(
         compressedPath,
         restoredPath);
 
-    
-using (var stream = File.OpenRead(restoredPath))
-{
-    string hash = Convert.ToHexString(
-        System.Security.Cryptography.SHA256.HashData(stream));
-
-    if (!string.Equals(hash, file.Sha256,
-        StringComparison.OrdinalIgnoreCase))
+    using (var stream = File.OpenRead(restoredPath))
     {
-        throw new InvalidDataException(
-            "Du lieu khong khop SHA-256!");
+        string hash = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(stream));
+
+        if (!string.Equals(
+            hash,
+            file.Sha256,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Du lieu khong khop SHA-256!");
+        }
     }
 
     Console.WriteLine("Kiem tra du lieu: OK");
 }
+finally
+{
+    if (File.Exists(restoredPath))
+    {
+        File.Delete(restoredPath);
+    }
+
+    Console.WriteLine("Da xu ly don dep file tam.");
+}
+
 
     // Tao duong dan kho Backup
     string backupStore = Path.Combine(
@@ -195,6 +223,15 @@ using (var stream = File.OpenRead(restoredPath))
     });
 
     Console.WriteLine("Da ghi nhan file vao Manifest.");
+
+}
+finally
+{
+    if (File.Exists(compressedPath))
+    {
+        File.Delete(compressedPath);
+    }
+}
 
 } 
 
@@ -243,11 +280,49 @@ if (manifest.Files.Count > 0)
                 WriteIndented = true
             });
 
-    File.WriteAllText(manifestPath, manifestJson);
+    
+    string tempManifestPath = manifestPath + ".tmp";
+
+    try
+    {
+        File.WriteAllText(tempManifestPath, manifestJson);
+        File.Move(tempManifestPath, manifestPath);
+    }
+    finally
+    {
+        if (File.Exists(tempManifestPath))
+        {
+            File.Delete(tempManifestPath);
+        }
+    }
+
 
     Console.WriteLine("Da luu Manifest: " + manifestPath);
     
-    File.WriteAllText(statePath, json);
+    
+string tempStatePath = statePath + ".tmp";
+
+try
+{
+    File.WriteAllText(tempStatePath, json);
+
+    if (File.Exists(statePath))
+    {
+        File.Replace(tempStatePath, statePath, null);
+    }
+    else
+    {
+        File.Move(tempStatePath, statePath);
+    }
+}
+finally
+{
+    if (File.Exists(tempStatePath))
+    {
+        File.Delete(tempStatePath);
+    }
+}
+
 
     Console.WriteLine(
         "Backup thanh cong! Da cap nhat trang thai.");
